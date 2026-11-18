@@ -31,9 +31,14 @@ class DashboardController extends Controller
             : $currentSessionId;
 
         // 1. STUDENTS (Session-aware)
-        $studentController = new StudentController();
-        $studentsReq = new Request(['session_id' => $sessionId, 'status' => 'active']);
-        $students = $studentController->getStudentsForSession($studentsReq, $schoolId);
+        try {
+            $studentController = new StudentController();
+            $studentsReq = new Request(['session_id' => $sessionId, 'status' => 'active']);
+            $students = $studentController->getStudentsForSession($studentsReq, $schoolId);
+        } catch (\Throwable $e) {
+            \Log::warning("Dashboard students query fallback: " . $e->getMessage());
+            $students = collect([]);
+        }
 
         $totalActive = count($students);
         $boys = 0;
@@ -116,48 +121,69 @@ class DashboardController extends Controller
             })
             ->sum('amount') ?? 0);
 
-        $recentPayments = DB::table('fee_payments')
-            ->join('students', 'fee_payments.student_id', '=', 'students.id')
-            ->leftJoin('fee_categories', 'fee_payments.fee_category_id', '=', 'fee_categories.id')
-            ->where('fee_payments.school_id', $schoolId)
-            ->where(function($q) {
-                $q->where('fee_payments.is_discount', 0)->orWhereNull('fee_payments.is_discount');
-            })
-            ->select(
-                'fee_payments.id',
-                'fee_payments.transaction_id as receipt_number',
-                'fee_payments.amount',
-                'fee_payments.payment_method',
-                'fee_payments.payment_date',
-                'students.name as student_name',
-                'students.class_name',
-                'fee_categories.name as fee_category_name'
-            )
-            ->orderBy('fee_payments.id', 'desc')
-            ->limit(5)
-            ->get();
+        $recentPayments = collect([]);
+        try {
+            $recentPayments = DB::table('fee_payments')
+                ->join('students', 'fee_payments.student_id', '=', 'students.id')
+                ->leftJoin('fee_categories', 'fee_payments.fee_category_id', '=', 'fee_categories.id')
+                ->where('fee_payments.school_id', $schoolId)
+                ->where(function($q) {
+                    $q->where('fee_payments.is_discount', 0)->orWhereNull('fee_payments.is_discount');
+                })
+                ->select(
+                    'fee_payments.id',
+                    'fee_payments.transaction_id as receipt_number',
+                    'fee_payments.amount',
+                    'fee_payments.payment_method',
+                    'fee_payments.payment_date',
+                    'students.name as student_name',
+                    'students.class_name',
+                    'fee_categories.name as fee_category_name'
+                )
+                ->orderBy('fee_payments.id', 'desc')
+                ->limit(5)
+                ->get();
+        } catch (\Throwable $e) {
+            \Log::warning("Dashboard recent payments fallback: " . $e->getMessage());
+            $recentPayments = collect([]);
+        }
 
         // 3. ADMISSION ENQUIRIES
-        $enquiryQuery = DB::table('admission_enquiries')->where('school_id', $schoolId);
-        if ($sessionId) {
-            $enquiryQuery->where(function($q) use ($sessionId) {
-                $q->where('target_session_id', $sessionId)
-                  ->orWhereNull('target_session_id');
-            });
+        $totalEnquiries = 0;
+        $newPendingEnquiries = 0;
+        $convertedEnquiries = 0;
+        try {
+            $enquiryQuery = DB::table('admission_enquiries')->where('school_id', $schoolId);
+            if ($sessionId) {
+                $enquiryQuery->where(function($q) use ($sessionId) {
+                    $q->where('academic_session_id', $sessionId)
+                      ->orWhereNull('academic_session_id');
+                });
+            }
+            $totalEnquiries = (clone $enquiryQuery)->count();
+            $newPendingEnquiries = (clone $enquiryQuery)->whereIn('status', ['new', 'pending', 'follow_up', 'enquired', 'form_purchased', 'test_scheduled', 'interview_done'])->count();
+            $convertedEnquiries = (clone $enquiryQuery)->whereIn('status', ['converted', 'admitted'])->count();
+        } catch (\Throwable $e) {
+            \Log::warning("Dashboard enquiries query fallback: " . $e->getMessage());
         }
-        $totalEnquiries = (clone $enquiryQuery)->count();
-        $newPendingEnquiries = (clone $enquiryQuery)->whereIn('status', ['new', 'pending', 'follow_up'])->count();
-        $convertedEnquiries = (clone $enquiryQuery)->where('status', 'converted')->count();
 
         // 4. ATTENDANCE
-        $todayAttendance = DB::table('attendances')
-            ->where('school_id', $schoolId)
-            ->where('date', $todayDate)
-            ->get();
-        $attendanceTotal = $todayAttendance->count();
-        $attendancePresent = $todayAttendance->where('status', 'present')->count();
-        $attendanceMarked = $attendanceTotal > 0;
-        $attendancePercent = $attendanceTotal > 0 ? round(($attendancePresent / $attendanceTotal) * 100, 1) : 0;
+        $attendanceMarked = false;
+        $attendanceTotal = 0;
+        $attendancePresent = 0;
+        $attendancePercent = 0;
+        try {
+            $todayAttendance = DB::table('attendances')
+                ->where('school_id', $schoolId)
+                ->where('date', $todayDate)
+                ->get();
+            $attendanceTotal = $todayAttendance->count();
+            $attendancePresent = $todayAttendance->where('status', 'present')->count();
+            $attendanceMarked = $attendanceTotal > 0;
+            $attendancePercent = $attendanceTotal > 0 ? round(($attendancePresent / $attendanceTotal) * 100, 1) : 0;
+        } catch (\Throwable $e) {
+            \Log::warning("Dashboard attendance query fallback: " . $e->getMessage());
+        }
 
         return response()->json([
             'session' => [
