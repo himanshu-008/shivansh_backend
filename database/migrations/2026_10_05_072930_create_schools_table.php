@@ -18,7 +18,7 @@ return new class extends Migration
             $table->string('contact_email')->nullable();
             $table->string('contact_phone')->nullable();
             $table->text('address')->nullable();
-            $table->string('logo_url')->nullable();
+            $table->longText('logo_url')->nullable();
             
             // Feature Toggles (JSON array of active modules like 'transport', 'books')
             $table->json('enabled_modules')->nullable();
